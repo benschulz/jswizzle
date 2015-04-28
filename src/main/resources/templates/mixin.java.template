@@ -1,0 +1,13 @@
+package ${package};
+
+<#list imports as import>
+import ${import};
+</#list>
+
+@de.benshu.jswizzle.internal.SwizzleMixin
+interface ${name.pascalCased}${typeParameters} {
+    <#list components as component>
+    ${component}
+
+    </#list>
+}

@@ -1,0 +1,4 @@
+<#assign parameterName="new" + property.name.pascalCased>
+    default ${simpleMixName} with${property.name.pascalCased}(${property.simpleTypeName} ${parameterName}) {
+        return ${copyInvocation?replace("%CHANGED%", parameterName)};
+    }

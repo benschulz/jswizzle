@@ -3,34 +3,47 @@
  */
 package de.benshu.jswizzle.processor;
 
+import com.google.common.base.CaseFormat;
 import com.google.common.base.Throwables;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSetMultimap;
 import com.google.common.collect.Iterables;
 import de.benshu.jswizzle.MixinComputer;
 import de.benshu.jswizzle.Swizzle;
+import de.benshu.jswizzle.internal.SwizzleMixin;
+import de.benshu.jswizzle.internal.Template;
+import de.benshu.jswizzle.model.Identifier;
+import de.benshu.jswizzle.model.Import;
+import de.benshu.jswizzle.model.Mixin;
+import de.benshu.jswizzle.model.MixinComponent;
+import de.benshu.jswizzle.model.TypeParameters;
+import de.benshu.jswizzle.utils.SwizzleCollectors;
 import org.kohsuke.MetaInfServices;
 
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Processor;
 import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
+import javax.lang.model.element.Element;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.ErrorType;
 import javax.lang.model.type.TypeMirror;
+import javax.lang.model.type.TypeVariable;
 import javax.tools.Diagnostic;
-import javax.tools.JavaFileObject;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.io.Writer;
 import java.lang.annotation.Annotation;
-import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.Set;
-import java.util.function.Function;
-import java.util.stream.Collector;
 import java.util.stream.Stream;
+
+import static de.benshu.jswizzle.utils.SwizzleCollectors.immutableList;
+import static de.benshu.jswizzle.utils.SwizzleCollectors.set;
 
 @MetaInfServices(Processor.class)
 @SupportedAnnotationTypes("*")
@@ -41,19 +54,23 @@ public class SwizzleProcessor extends AbstractProcessor {
             if (roundEnvironment.processingOver() || annotations.isEmpty())
                 return false;
 
-            final ImmutableSetMultimap<TypeElement, String> mixins = annotations.stream()
+            final ImmutableSetMultimap<TypeElement, MixinComponent> mixins = annotations.stream()
                     .filter(a -> a.getAnnotation(Swizzle.class) != null)
                     .map(this::loadAnnotation)
                     .flatMap(a -> compute(roundEnvironment, a))
-                    .collect(setMultimap());
+                    .collect(SwizzleCollectors.setMultimap(MixinComponent::getMix, c -> c));
 
             mixins.asMap().entrySet().stream().parallel().forEach(m -> {
                 final ImmutableSet<TypeMirror> candidates = m.getKey().getInterfaces().stream()
-                        .filter(ErrorType.class::isInstance)
-                        .collect(immutableSet());
+                        .filter(this::isMixinCandidate)
+                        .collect(SwizzleCollectors.set());
 
-                if (candidates.size() == 1)
-                    generateMixin(m.getKey(), candidates.iterator().next(), ImmutableSet.copyOf(m.getValue()));
+                if (candidates.size() == 1) {
+                    final DeclaredType mixin = (DeclaredType) candidates.iterator().next();
+                    final Identifier name = Identifier.from(simpleNameOf(mixin), CaseFormat.UPPER_CAMEL);
+
+                    generateMixin(new Mixin(mixin, name, m.getKey(), ImmutableSet.copyOf(m.getValue())));
+                }
             });
 
             return false;
@@ -68,29 +85,48 @@ public class SwizzleProcessor extends AbstractProcessor {
         }
     }
 
-    private void generateMixin(TypeElement mix, TypeMirror mixin, ImmutableSet<String> mixinComponents) {
-        final String mixFqn = mix.getQualifiedName().toString();
-        final String mixinLocalName = determineLocalName(mixin);
-        final String mixinFqn = (mixFqn.contains(".") ? mixFqn.substring(0, mixFqn.lastIndexOf(".") + 1) : "") + mixinLocalName;
+    private boolean isMixinCandidate(TypeMirror mixin) {
+        final Element ifaceElement = processingEnv.getTypeUtils().asElement(mixin);
 
+        return ErrorType.class.isInstance(mixin)
+                || DeclaredType.class.isInstance(mixin) && ifaceElement.getAnnotation(SwizzleMixin.class) != null;
+
+    }
+
+    private void generateMixin(Mixin mixin) {
         try {
-            final JavaFileObject sourceFile = processingEnv.getFiler().createSourceFile(mixinFqn, mix);
+            final String mixinFqn = processingEnv.getElementUtils().getPackageOf(mixin.getMix()).getQualifiedName().toString()
+                    + "." + mixin.getName().getPascalCased();
 
-            try (Writer w = sourceFile.openWriter()) {
-                w.write(joinMixins(mix, mixin, mixinComponents));
+            try (Writer w = processingEnv.getFiler().createSourceFile(mixinFqn, mixin.getMix()).openWriter()) {
+                w.write(renderMixin(mixin));
             }
         } catch (IOException e) {
             throw Throwables.propagate(e);
         }
     }
 
-    private String joinMixins(TypeElement mix, TypeMirror mixin, ImmutableSet<String> mixinComponents) {
-        return "package " + processingEnv.getElementUtils().getPackageOf(mix).getQualifiedName().toString() + ";\n" +
-                "interface " + determineLocalName(mixin) + " {}";
+    private String renderMixin(Mixin mixin) {
+        final ImmutableList<String> typeArguments = mixin.getReference().getTypeArguments().stream()
+                .map(TypeVariable.class::cast)
+                .map(v -> v.asElement().getSimpleName().toString())
+                .collect(immutableList());
+
+        return Template.render("mixin.java.template", ImmutableMap.of(
+                "package", processingEnv.getElementUtils().getPackageOf(mixin.getMix()).getQualifiedName().toString(),
+                "imports", mixin.getComponents().stream()
+                        .flatMap(c -> c.getRequiredImports().stream().map(Import::toString))
+                        .distinct()
+                        .sorted()
+                        .collect(set()),
+                "name", mixin.getName(),
+                "typeParameters", TypeParameters.of(mixin.getMix()).select(typeArguments).asJavaSource(),
+                "components", mixin.getComponents().stream().map(MixinComponent::getBody).collect(set())
+        ));
     }
 
-    private String determineLocalName(TypeMirror mixin) {
-        return processingEnv.getElementUtils().getBinaryName((TypeElement) processingEnv.getTypeUtils().asElement(mixin)).toString();
+    private String simpleNameOf(TypeMirror mixin) {
+        return processingEnv.getTypeUtils().asElement(mixin).getSimpleName().toString();
     }
 
     private Class<? extends Annotation> loadAnnotation(TypeElement annotation) {
@@ -101,32 +137,11 @@ public class SwizzleProcessor extends AbstractProcessor {
         }
     }
 
-    private Stream<Map.Entry<TypeElement, String>> compute(RoundEnvironment roundEnvironment, Class<? extends Annotation> annotation) {
+    private Stream<MixinComponent> compute(RoundEnvironment roundEnvironment, Class<? extends Annotation> annotation) {
         final Class<? extends MixinComputer> computerClass = annotation.getAnnotation(Swizzle.class).computer();
         final MixinComputer computer = Iterables.getOnlyElement(ServiceLoader.load(computerClass, computerClass.getClassLoader()));
 
-        return roundEnvironment.getElementsAnnotatedWith(annotation).stream().map(computer::computeFor);
+        return roundEnvironment.getElementsAnnotatedWith(annotation).stream().map(e -> computer.computeFor(processingEnv, e));
     }
 
-    public static <E extends Map.Entry<? extends K, ? extends V>, K, V> Collector<E, ?, ImmutableSetMultimap<K, V>> setMultimap() {
-        return setMultimap(Map.Entry::getKey, Map.Entry::getValue);
-    }
-
-    public static <E, K, V> Collector<E, ?, ImmutableSetMultimap<K, V>> setMultimap(
-            Function<? super E, ? extends K> keyFunction,
-            Function<? super E, ? extends V> valueFunction) {
-        return Collector.of(
-                ImmutableSetMultimap::<K, V>builder,
-                (b, e) -> b.put(keyFunction.apply(e), valueFunction.apply(e)),
-                (left, right) -> left.putAll(right.build()),
-                ImmutableSetMultimap.Builder::build);
-    }
-
-    public static <E> Collector<E, ?, ImmutableSet<E>> immutableSet() {
-        return Collector.of(
-                ImmutableSet::<E>builder,
-                ImmutableSet.Builder::add,
-                (left, right) -> left.addAll(right.build()),
-                ImmutableSet.Builder::build);
-    }
 }
