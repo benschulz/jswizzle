@@ -5,7 +5,7 @@ import ${import};
 </#list>
 
 @de.benshu.jswizzle.internal.SwizzleMixin
-interface ${name.pascalCased}${typeParameters} {
+interface ${name.pascalCased}${typeParameters}<#if superMixins?has_content> extends ${superMixins?join(", ")}</#if> {
     <#list components as component>
     ${component}
 

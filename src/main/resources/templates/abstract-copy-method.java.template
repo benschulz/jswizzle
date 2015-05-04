@@ -1,0 +1,2 @@
+
+    ${simpleMixName} with${property.name.pascalCased}(${property.simpleTypeName} ${"new" + property.name.pascalCased});

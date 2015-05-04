@@ -13,7 +13,7 @@ import java.util.Spliterators;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
-import static de.benshu.jswizzle.utils.SwizzleCollectors.immutableList;
+import static de.benshu.jswizzle.utils.SwizzleCollectors.list;
 import static de.benshu.jswizzle.utils.SwizzleCollectors.set;
 import static java.util.stream.Collectors.joining;
 
@@ -31,7 +31,7 @@ public class TypeParameters implements Iterable<TypeParameter>, JavaSourceConver
     }
 
     public TypeParameters select(ImmutableList<String> names) {
-        return new TypeParameters(names.stream().map(byName::get).collect(immutableList()));
+        return new TypeParameters(names.stream().map(byName::get).collect(list()));
     }
 
     public String asJavaSource(ImmutableSet<AsJavaSourceOptions> options) {

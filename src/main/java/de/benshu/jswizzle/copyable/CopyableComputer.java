@@ -1,9 +1,11 @@
 package de.benshu.jswizzle.copyable;
 
+import com.google.common.base.CaseFormat;
 import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableSetMultimap;
 import de.benshu.jswizzle.MixinComputer;
 import de.benshu.jswizzle.internal.Template;
 import de.benshu.jswizzle.model.AsJavaSourceOptions;
@@ -20,13 +22,18 @@ import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.element.VariableElement;
 import javax.lang.model.util.ElementFilter;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import static de.benshu.jswizzle.utils.SwizzleCollectors.orderedSet;
+import static com.google.common.collect.Maps.immutableEntry;
+import static de.benshu.jswizzle.utils.SwizzleCollectors.list;
+import static de.benshu.jswizzle.utils.SwizzleCollectors.map;
 import static de.benshu.jswizzle.utils.SwizzleCollectors.set;
+import static de.benshu.jswizzle.utils.SwizzleCollectors.setMultimap;
 import static java.util.stream.Collectors.joining;
 
 @MetaInfServices(CopyableComputer.class)
@@ -36,13 +43,8 @@ public class CopyableComputer extends MixinComputer {
         final TypeElement mix = (TypeElement) e;
         final Type mixType = Type.from(mix.asType());
 
-        final ExecutableElement constructorOrFactory = findConstructorOrFactory(mix);
-
-        final ImmutableSet<Property> properties = constructorOrFactory.getParameters().stream()
-                .map(p -> new Property(
-                        Identifier.from(p.getSimpleName()),
-                        Type.from(p.asType())))
-                .collect(orderedSet());
+        final Optional<ExecutableElement> constructorOrFactory = findConstructorOrFactory(mix);
+        final ImmutableList<Property> properties = determineProperties(processingEnvironment, mix, constructorOrFactory);
 
         return new MixinComponent() {
             @Override
@@ -69,11 +71,17 @@ public class CopyableComputer extends MixinComputer {
             }
 
             private String toCopyMethod(Property property) {
-                return Template.render("copy-method.java.template", ImmutableMap.of(
-                        "simpleMixName", mixType.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES),
-                        "property", property,
-                        "copyInvocation", copyInvocationFor(constructorOrFactory, property)
-                ));
+                if (constructorOrFactory.isPresent())
+                    return Template.render("copy-method.java.template", ImmutableMap.of(
+                            "simpleMixName", mixType.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES),
+                            "property", property,
+                            "copyInvocation", copyInvocationFor(constructorOrFactory.get(), property)
+                    ));
+                else
+                    return Template.render("abstract-copy-method.java.template", ImmutableMap.of(
+                            "simpleMixName", mixType.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES),
+                            "property", property
+                    ));
             }
 
             private String copyInvocationFor(ExecutableElement constructorOrFactory, Property property) {
@@ -91,12 +99,12 @@ public class CopyableComputer extends MixinComputer {
             }
 
             private String determineGetOf(Property property) {
-                return "((" + mixType.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES) + ")this)." + property.getName().getCamelCased();
+                return "((" + mixType.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES) + ")this)." + property.getAccessor();
             }
         };
     }
 
-    private ExecutableElement findConstructorOrFactory(TypeElement mix) {
+    private Optional<ExecutableElement> findConstructorOrFactory(TypeElement mix) {
         final List<ExecutableElement> constructors = ElementFilter.constructorsIn(mix.getEnclosedElements());
         final List<ExecutableElement> methods = ElementFilter.methodsIn(mix.getEnclosedElements());
 
@@ -105,20 +113,99 @@ public class CopyableComputer extends MixinComputer {
                 .append(FluentIterable.from(methods).filter(m -> m.getModifiers().contains(Modifier.STATIC) && m.getAnnotation(CopyFactory.class) != null))
                 .toSet();
 
-        return FluentIterable.from(annotated)
-                .append(constructors.stream().max((a, b) -> a.getParameters().size() - b.getParameters().size()).get())
-                .first().get();
+        final ImmutableSet<ExecutableElement> implicit = mix.getModifiers().contains(Modifier.ABSTRACT)
+                ? ImmutableSet.of()
+                : ImmutableSet.copyOf(constructors.stream()
+                .filter(c -> !c.getModifiers().contains(Modifier.PRIVATE))
+                .sorted((a, b) -> -(a.getParameters().size() - b.getParameters().size()))
+                .limit(1).iterator());
+
+        return FluentIterable.from(annotated).append(implicit).toList().stream().findFirst();
+    }
+
+    private ImmutableList<Property> determineProperties(ProcessingEnvironment processingEnvironment, TypeElement mix, Optional<ExecutableElement> constructorOrFactory) {
+        final ImmutableSetMultimap<Identifier, Property> ambiguousProperties = getAllElements(processingEnvironment, mix)
+                .flatMap(this::toPotentialProperty)
+                .map(p -> immutableEntry(p.getName(), p))
+                .collect(setMultimap());
+
+        final ImmutableMap<Identifier, Property> properties = ambiguousProperties.asMap().entrySet().stream()
+                .map(e -> immutableEntry(e.getKey(), e.getValue().iterator().next())) // select any of the equally named ambiguousProperties
+                .collect(map());
+
+        if (constructorOrFactory.isPresent())
+            return constructorOrFactory.get().getParameters().stream()
+                    .map(p -> {
+                        final Identifier id = Identifier.from(p.getSimpleName());
+                        final Type type = Type.from(p.asType());
+                        return properties.getOrDefault(id, new Property(id, type, "NO_SUCH_PROPERTY_" + id.getScreamingSnakeCased()));
+                    })
+                    .collect(list());
+        else
+            return ImmutableList.copyOf(properties.values());
+    }
+
+    private Stream<Element> getAllElements(ProcessingEnvironment processingEnvironment, TypeElement typeElement) {
+        return typeElement == null ? Stream.empty() : Stream.concat(
+                typeElement.getEnclosedElements().stream(),
+                getInheritedElements(processingEnvironment, typeElement)
+        );
+    }
+
+    // FIXME Type arguments must be substituted in resulting properties' types.
+    private Stream<Element> getInheritedElements(ProcessingEnvironment processingEnvironment, TypeElement typeElement) {
+        return Stream.concat(
+                getAllElements(processingEnvironment, (TypeElement) processingEnvironment.getTypeUtils().asElement(typeElement.getSuperclass())),
+                typeElement.getInterfaces().stream()
+                        .flatMap(i -> getAllElements(processingEnvironment, (TypeElement) processingEnvironment.getTypeUtils().asElement(i)))
+        );
+    }
+
+    private Stream<Property> toPotentialProperty(Element element) {
+        if (element.getModifiers().contains(Modifier.PRIVATE))
+            return Stream.empty();
+
+        switch (element.getKind()) {
+            case FIELD:
+                return Stream.of(toProperty((VariableElement) element));
+            case METHOD:
+                return toPotentialProperty((ExecutableElement) element);
+            default:
+                return Stream.empty();
+        }
+
+    }
+
+    private Property toProperty(VariableElement field) {
+        final String name = field.getSimpleName().toString();
+        final Identifier id = Identifier.from(name);
+        final Type type = Type.from(field.asType());
+
+        return new Property(id, type, name);
+    }
+
+    private Stream<Property> toPotentialProperty(ExecutableElement method) {
+        if (!method.getTypeParameters().isEmpty() || !method.getParameters().isEmpty() || !method.getSimpleName().toString().matches("^(get|is)[A-Z]"))
+            return Stream.empty();
+
+        final String name = method.getSimpleName().toString();
+        final Identifier id = Identifier.from(name.substring(name.startsWith("get") ? 3 : 2), CaseFormat.UPPER_CAMEL);
+        final Type type = Type.from(method.getReturnType());
+
+        return Stream.of(new Property(id, type, name + "()"));
     }
 
     public static class Property {
         private final Identifier name;
         private final Type type;
         private final String simpleTypeName;
+        private final String accessor;
 
-        public Property(Identifier name, Type type) {
+        public Property(Identifier name, Type type, String accessor) {
             this.name = name;
             this.type = type;
             this.simpleTypeName = type.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES);
+            this.accessor = accessor;
         }
 
         public Identifier getName() {
@@ -131,6 +218,10 @@ public class CopyableComputer extends MixinComputer {
 
         public Type getType() {
             return type;
+        }
+
+        public String getAccessor() {
+            return accessor;
         }
     }
 }

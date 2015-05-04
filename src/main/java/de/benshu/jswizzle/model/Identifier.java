@@ -30,4 +30,14 @@ public class Identifier {
     public String getScreamingSnakeCased() {
         return caseFormat.to(CaseFormat.UPPER_UNDERSCORE, identifier);
     }
+
+    @Override
+    public int hashCode() {
+        return getCamelCased().hashCode();
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        return obj == this || obj instanceof Identifier && ((Identifier) obj).getCamelCased().equals(getCamelCased());
+    }
 }

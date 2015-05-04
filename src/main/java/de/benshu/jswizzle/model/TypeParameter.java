@@ -6,7 +6,7 @@ import com.google.common.collect.ImmutableSet;
 
 import javax.lang.model.element.TypeParameterElement;
 
-import static de.benshu.jswizzle.utils.SwizzleCollectors.immutableList;
+import static de.benshu.jswizzle.utils.SwizzleCollectors.list;
 import static de.benshu.jswizzle.utils.SwizzleCollectors.set;
 import static java.util.stream.Collectors.joining;
 
@@ -37,6 +37,6 @@ public class TypeParameter implements JavaSourceConvertible {
     public ImmutableList<Type> getUpperBounds() {
         return typeParameter.getBounds().stream()
                 .map(Type::from)
-                .collect(immutableList());
+                .collect(list());
     }
 }

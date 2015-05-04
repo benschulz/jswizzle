@@ -18,6 +18,7 @@ import de.benshu.jswizzle.model.Identifier;
 import de.benshu.jswizzle.model.Import;
 import de.benshu.jswizzle.model.Mixin;
 import de.benshu.jswizzle.model.MixinComponent;
+import de.benshu.jswizzle.model.Type;
 import de.benshu.jswizzle.model.TypeParameters;
 import de.benshu.jswizzle.utils.SwizzleCollectors;
 import org.kohsuke.MetaInfServices;
@@ -38,11 +39,12 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.io.Writer;
 import java.lang.annotation.Annotation;
+import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.stream.Stream;
 
-import static de.benshu.jswizzle.utils.SwizzleCollectors.immutableList;
+import static de.benshu.jswizzle.utils.SwizzleCollectors.list;
 import static de.benshu.jswizzle.utils.SwizzleCollectors.set;
 
 @MetaInfServices(Processor.class)
@@ -60,7 +62,7 @@ public class SwizzleProcessor extends AbstractProcessor {
                     .flatMap(a -> compute(roundEnvironment, a))
                     .collect(SwizzleCollectors.setMultimap(MixinComponent::getMix, c -> c));
 
-            mixins.asMap().entrySet().stream().parallel().forEach(m -> {
+            mixins.asMap().entrySet().stream().forEach(m -> {
                 final ImmutableSet<TypeMirror> candidates = m.getKey().getInterfaces().stream()
                         .filter(this::isMixinCandidate)
                         .collect(SwizzleCollectors.set());
@@ -110,19 +112,44 @@ public class SwizzleProcessor extends AbstractProcessor {
         final ImmutableList<String> typeArguments = mixin.getReference().getTypeArguments().stream()
                 .map(TypeVariable.class::cast)
                 .map(v -> v.asElement().getSimpleName().toString())
-                .collect(immutableList());
+                .collect(list());
 
-        return Template.render("mixin.java.template", ImmutableMap.of(
-                "package", processingEnv.getElementUtils().getPackageOf(mixin.getMix()).getQualifiedName().toString(),
-                "imports", mixin.getComponents().stream()
-                        .flatMap(c -> c.getRequiredImports().stream().map(Import::toString))
-                        .distinct()
-                        .sorted()
-                        .collect(set()),
-                "name", mixin.getName(),
-                "typeParameters", TypeParameters.of(mixin.getMix()).select(typeArguments).asJavaSource(),
-                "components", mixin.getComponents().stream().map(MixinComponent::getBody).collect(set())
-        ));
+        return Template.render("mixin.java.template", ImmutableMap.<String, Object>builder()
+                        .put("package", processingEnv.getElementUtils().getPackageOf(mixin.getMix()).getQualifiedName().toString())
+                        .put("imports", mixin.getComponents().stream()
+                                .flatMap(c -> c.getRequiredImports().stream().map(Import::toString))
+                                .distinct()
+                                .sorted()
+                                .collect(set()))
+                        .put("name", mixin.getName())
+                        .put("typeParameters", TypeParameters.of(mixin.getMix()).select(typeArguments).asJavaSource())
+                        .put("components", mixin.getComponents().stream().map(MixinComponent::getBody).collect(set()))
+                        .put("superMixins", findSupermixins(mixin))
+                        .build()
+        );
+    }
+
+    private ImmutableSet<String> findSupermixins(Mixin mixin) {
+        return findSupermixinsInSupertypesOf(mixin.getMix()).collect(set());
+    }
+
+    private Stream<String> findSupermixinsInSupertypesOf(TypeElement typeElement) {
+        return Stream.concat(Stream.of(typeElement.getSuperclass()), typeElement.getInterfaces().stream())
+                .map(t -> (TypeElement) processingEnv.getTypeUtils().asElement(t))
+                .filter(e -> e != null)
+                .flatMap(this::findSupermixin);
+    }
+
+    private Stream<String> findSupermixin(TypeElement typeElement) {
+        final Optional<String> supermixin = typeElement.getInterfaces().stream()
+                .filter(this::isMixinCandidate)
+                .map(Type::from)
+                .map(Type::asJavaSource)
+                .findAny();
+
+        return supermixin.isPresent()
+                ? Stream.of(supermixin.get())
+                : findSupermixinsInSupertypesOf(typeElement);
     }
 
     private String simpleNameOf(TypeMirror mixin) {

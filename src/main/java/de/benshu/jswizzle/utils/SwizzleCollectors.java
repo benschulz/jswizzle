@@ -10,6 +10,21 @@ import java.util.function.Function;
 import java.util.stream.Collector;
 
 public class SwizzleCollectors {
+    public static <E extends Map.Entry<? extends K, ? extends V>, K, V> Collector<E, ?, ImmutableMap<K, V>> map() {
+        return map(Map.Entry::getKey, Map.Entry::getValue);
+    }
+
+    public static <E, K, V> Collector<E, ?, ImmutableMap<K, V>> map(
+            Function<? super E, ? extends K> keyFunction,
+            Function<? super E, ? extends V> valueFunction) {
+        return Collector.of(
+                ImmutableMap::<K, V>builder,
+                (b, e) -> b.put(keyFunction.apply(e), valueFunction.apply(e)),
+                (left, right) -> left.putAll(right.build()),
+                ImmutableMap.Builder::build,
+                Collector.Characteristics.UNORDERED);
+    }
+
     public static <E extends Map.Entry<? extends K, ? extends V>, K, V> Collector<E, ?, ImmutableMap<K, V>> orderedMap() {
         return orderedMap(Map.Entry::getKey, Map.Entry::getValue);
     }
@@ -56,7 +71,7 @@ public class SwizzleCollectors {
                 ImmutableSet.Builder::build);
     }
 
-    public static <E> Collector<E, ?, ImmutableList<E>> immutableList() {
+    public static <E> Collector<E, ?, ImmutableList<E>> list() {
         return Collector.of(
                 ImmutableList::<E>builder,
                 ImmutableList.Builder::add,
