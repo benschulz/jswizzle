@@ -124,13 +124,23 @@ public class CopyableComputer extends MixinComputer {
     }
 
     private ImmutableList<Property> determineProperties(ProcessingEnvironment processingEnvironment, TypeElement mix, Optional<ExecutableElement> constructorOrFactory) {
-        final ImmutableSetMultimap<Identifier, Property> ambiguousProperties = getAllElements(processingEnvironment, mix)
+        final ImmutableSetMultimap<Identifier, Property> nonExcludedProperties = getAllElements(processingEnvironment, mix)
                 .flatMap(this::toPotentialProperty)
                 .map(p -> immutableEntry(p.getName(), p))
+                .collect(setMultimap())
+                .asMap().entrySet().stream()
+                .filter(e -> e.getValue().stream().noneMatch(Property::isExcluded))
+                .flatMap(e -> e.getValue().stream().map(p -> immutableEntry(e.getKey(), p)))
                 .collect(setMultimap());
 
-        final ImmutableMap<Identifier, Property> properties = ambiguousProperties.asMap().entrySet().stream()
-                .map(e -> immutableEntry(e.getKey(), e.getValue().iterator().next())) // select any of the equally named ambiguousProperties
+        final ImmutableSetMultimap<Identifier, Property> includedProperties = nonExcludedProperties.entries().stream()
+                .anyMatch(e -> e.getValue().isIncluded())
+                ? nonExcludedProperties.entries().stream().filter(e -> e.getValue().isIncluded()).collect(setMultimap())
+                : nonExcludedProperties;
+
+        final ImmutableMap<Identifier, Property> properties = includedProperties.asMap().entrySet().stream()
+                .filter(e -> e.getValue().stream().noneMatch(Property::isExcluded))
+                .map(e -> immutableEntry(e.getKey(), e.getValue().iterator().next())) // select any of the equally named nonExcludedProperties
                 .collect(map());
 
         if (constructorOrFactory.isPresent())
@@ -138,7 +148,7 @@ public class CopyableComputer extends MixinComputer {
                     .map(p -> {
                         final Identifier id = Identifier.from(p.getSimpleName());
                         final Type type = Type.from(p.asType());
-                        return properties.getOrDefault(id, new Property(id, type, "NO_SUCH_PROPERTY_" + id.getScreamingSnakeCased()));
+                        return properties.getOrDefault(id, new Property(p, id, type, "NO_SUCH_PROPERTY_" + id.getScreamingSnakeCased()));
                     })
                     .collect(list());
         else
@@ -181,31 +191,41 @@ public class CopyableComputer extends MixinComputer {
         final Identifier id = Identifier.from(name);
         final Type type = Type.from(field.asType());
 
-        return new Property(id, type, name);
+        return new Property(field, id, type, name);
     }
 
     private Stream<Property> toPotentialProperty(ExecutableElement method) {
-        if (!method.getTypeParameters().isEmpty() || !method.getParameters().isEmpty() || !method.getSimpleName().toString().matches("^(get|is)[A-Z]"))
+        if (!method.getTypeParameters().isEmpty() || !method.getParameters().isEmpty() || !method.getSimpleName().toString().matches("^(get|is)[A-Z].*"))
             return Stream.empty();
 
         final String name = method.getSimpleName().toString();
         final Identifier id = Identifier.from(name.substring(name.startsWith("get") ? 3 : 2), CaseFormat.UPPER_CAMEL);
         final Type type = Type.from(method.getReturnType());
 
-        return Stream.of(new Property(id, type, name + "()"));
+        return Stream.of(new Property(method, id, type, name + "()"));
     }
 
     public static class Property {
+        private final Element element;
         private final Identifier name;
         private final Type type;
         private final String simpleTypeName;
         private final String accessor;
 
-        public Property(Identifier name, Type type, String accessor) {
+        public Property(Element element, Identifier name, Type type, String accessor) {
+            this.element = element;
             this.name = name;
             this.type = type;
             this.simpleTypeName = type.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES);
             this.accessor = accessor;
+        }
+
+        public boolean isExcluded() {
+            return element.getAnnotation(Copyable.Exclude.class) != null;
+        }
+
+        public boolean isIncluded() {
+            return element.getAnnotation(Copyable.Include.class) != null;
         }
 
         public Identifier getName() {

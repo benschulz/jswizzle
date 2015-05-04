@@ -13,4 +13,11 @@ import java.lang.annotation.Target;
         computer = CopyableComputer.class
 )
 public @interface Copyable {
+    @Retention(RetentionPolicy.SOURCE)
+    @Target({ElementType.FIELD, ElementType.METHOD})
+    public @interface Exclude {}
+
+    @Retention(RetentionPolicy.SOURCE)
+    @Target({ElementType.FIELD, ElementType.METHOD})
+    public @interface Include {}
 }
