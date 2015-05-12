@@ -9,9 +9,7 @@ import java.lang.annotation.Target;
 
 @Retention(RetentionPolicy.SOURCE)
 @Target(ElementType.TYPE)
-@Swizzle(
-        computer = CopyableComputer.class
-)
+@Swizzle(computer = CopyableComputer.class)
 public @interface Copyable {
     @Retention(RetentionPolicy.SOURCE)
     @Target({ElementType.FIELD, ElementType.METHOD})
