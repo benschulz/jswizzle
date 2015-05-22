@@ -2,11 +2,11 @@
 <#list properties as property>
   <#if property.writable>
     default void set${property.name.pascalCased}(${property.simpleTypeName} new${property.name.pascalCased}) {
-        ((${simpleMixName})this).${property.name.camelCased} = new${property.name.pascalCased};
+        ((${qualifiedMixType})this).${property.name.camelCased} = new${property.name.pascalCased};
     }
   </#if>
     default ${property.simpleTypeName} get${property.name.pascalCased}() {
-        return ((${simpleMixName})this).${property.name.camelCased};
+        return ((${qualifiedMixType})this).${property.name.camelCased};
     }
 
 </#list>

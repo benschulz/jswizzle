@@ -42,6 +42,7 @@ import java.lang.annotation.Annotation;
 import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import static de.benshu.jswizzle.utils.SwizzleCollectors.list;
@@ -114,10 +115,14 @@ public class SwizzleProcessor extends AbstractProcessor {
                 .map(v -> v.asElement().getSimpleName().toString())
                 .collect(list());
 
+        final String pkg = processingEnv.getElementUtils().getPackageOf(mixin.getMix()).getQualifiedName().toString();
+        final Pattern redundantImport = Pattern.compile("\\A" + Pattern.quote(pkg) + "\\.[^\\.]+\\z");
+
         return Template.render("mixin.java.template", ImmutableMap.<String, Object>builder()
-                        .put("package", processingEnv.getElementUtils().getPackageOf(mixin.getMix()).getQualifiedName().toString())
+                        .put("package", pkg)
                         .put("imports", mixin.getComponents().stream()
                                 .flatMap(c -> c.getRequiredImports().stream().map(Import::toString))
+                                .filter(redundantImport.asPredicate().negate())
                                 .distinct()
                                 .sorted()
                                 .collect(set()))

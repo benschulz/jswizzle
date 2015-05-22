@@ -73,13 +73,14 @@ public class CopyableComputer extends MixinComputer {
             private String toCopyMethod(Property property) {
                 if (constructorOrFactory.isPresent())
                     return Template.render("copy-method.java.template", ImmutableMap.of(
-                            "simpleMixName", mixType.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES),
+                            "qualifiedMixType", mixType.asJavaSource(),
                             "property", property,
+                            // TODO Figure out how to move this to the template.
                             "copyInvocation", copyInvocationFor(constructorOrFactory.get(), property)
                     ));
                 else
                     return Template.render("abstract-copy-method.java.template", ImmutableMap.of(
-                            "simpleMixName", mixType.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES),
+                            "qualifiedMixType", mixType.asJavaSource(),
                             "property", property
                     ));
             }
@@ -90,16 +91,16 @@ public class CopyableComputer extends MixinComputer {
 
             private String copyInvocationStartFor(ExecutableElement constructorOrFactory) {
                 return constructorOrFactory.getKind() == ElementKind.CONSTRUCTOR
-                        ? "new " + mixType.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES)
-                        : mixType.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES).split("<")[0] + "." + constructorOrFactory.getSimpleName();
+                        ? "new " + mixType.asJavaSource()
+                        : mixType.asJavaSource().split("<")[0] + "." + constructorOrFactory.getSimpleName();
             }
 
             private String copyInvocationArgumentList(Property property) {
-                return "(" + properties.stream().map(p -> p == property ? "%CHANGED%" : determineGetOf(p)).collect(joining(", ")) + ")";
+                return "(\n" + properties.stream().map(p -> p == property ? "                %CHANGED%" : determineGetOf(p)).collect(joining(",\n")) + "\n        )";
             }
 
             private String determineGetOf(Property property) {
-                return "((" + mixType.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES) + ")this)." + property.getAccessor();
+                return "                ((" + mixType.asJavaSource() + ") this)." + property.getAccessor();
             }
         };
     }
