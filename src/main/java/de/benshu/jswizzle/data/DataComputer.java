@@ -8,56 +8,58 @@ import de.benshu.jswizzle.model.AsJavaSourceOptions;
 import de.benshu.jswizzle.model.Identifier;
 import de.benshu.jswizzle.model.Import;
 import de.benshu.jswizzle.model.MixinComponent;
+import de.benshu.jswizzle.model.Reflection;
 import de.benshu.jswizzle.model.Type;
+import de.benshu.jswizzle.model.TypeDeclaration;
 import org.kohsuke.MetaInfServices;
 
-import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
 
-import static de.benshu.jswizzle.utils.SwizzleCollectors.set;
+import static de.benshu.commons.core.streams.Collectors.set;
 
 @MetaInfServices(DataComputer.class)
 public class DataComputer extends MixinComputer {
     @Override
-    public MixinComponent computeFor(ProcessingEnvironment processingEnvironment, Element e) {
+    public MixinComponent computeFor(Reflection reflection, Element e) {
         if (e instanceof TypeElement)
-            return accessorsForAllFields((TypeElement) e);
+            return accessorsForAllFields(reflection, (TypeElement) e);
         else
-            return accessorForField((VariableElement) e);
+            return accessorForField(reflection, (VariableElement) e);
     }
 
-    private MixinComponent accessorsForAllFields(TypeElement mix) {
+    private MixinComponent accessorsForAllFields(Reflection reflection, TypeElement mix) {
         final ImmutableSet<Property> properties = mix.getEnclosedElements().stream()
                 .filter(e -> e.getKind() == ElementKind.FIELD)
                 .filter(e -> e.getAnnotation(Data.Exclude.class) == null)
-                .map(e -> new Property((VariableElement) e))
+                .map(VariableElement.class::cast)
+                .map(v -> new Property(v, reflection.of(v.asType())))
                 .collect(set());
 
-        return createMixinComponent(mix, properties);
+        return createMixinComponent(reflection.of(mix), properties);
     }
 
-    private MixinComponent accessorForField(VariableElement field) {
+    private MixinComponent accessorForField(Reflection reflection, VariableElement field) {
         final TypeElement mix = (TypeElement) field.getEnclosingElement();
-        final Property property = new Property(field);
+        final Property property = new Property(field, reflection.of(field.asType()));
 
-        return createMixinComponent(mix, ImmutableSet.of(property));
+        return createMixinComponent(reflection.of(mix), ImmutableSet.of(property));
     }
 
-    private MixinComponent createMixinComponent(final TypeElement mix, final ImmutableSet<Property> properties) {
+    private MixinComponent createMixinComponent(final TypeDeclaration mix, final ImmutableSet<Property> properties) {
         return new MixinComponent() {
             @Override
-            public TypeElement getMix() {
+            public TypeDeclaration getMix() {
                 return mix;
             }
 
             @Override
             public ImmutableSet<Import> getRequiredImports() {
                 return properties.stream()
-                        .flatMap(p -> p.getType().extractReferencedTypes().stream())
+                        .flatMap(p -> p.getType().referencedTypes())
                         .map(Import::of)
                         .collect(set());
             }
@@ -65,7 +67,7 @@ public class DataComputer extends MixinComputer {
             @Override
             public String getBody() {
                 return Template.render("accessors.java.template", ImmutableMap.of(
-                        "qualifiedMixType", Type.from(mix.asType()).asJavaSource(),
+                        "qualifiedMixType", mix.asType().asJavaSource(),
                         "properties", properties
                 ));
             }
@@ -78,9 +80,9 @@ public class DataComputer extends MixinComputer {
         private final String simpleTypeName;
         private final boolean writable;
 
-        public Property(VariableElement field) {
+        public Property(VariableElement field, Type type) {
             this.name = Identifier.from(field.getSimpleName());
-            this.type = Type.from(field.asType());
+            this.type = type;
             this.simpleTypeName = type.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES);
             this.writable = !field.getModifiers().contains(Modifier.FINAL);
         }

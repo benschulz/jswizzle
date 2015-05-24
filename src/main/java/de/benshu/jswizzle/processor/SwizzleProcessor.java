@@ -14,20 +14,23 @@ import de.benshu.jswizzle.MixinComputer;
 import de.benshu.jswizzle.Swizzle;
 import de.benshu.jswizzle.internal.SwizzleMixin;
 import de.benshu.jswizzle.internal.Template;
+import de.benshu.jswizzle.model.AsJavaSourceOptions;
 import de.benshu.jswizzle.model.Identifier;
 import de.benshu.jswizzle.model.Import;
 import de.benshu.jswizzle.model.Mixin;
 import de.benshu.jswizzle.model.MixinComponent;
+import de.benshu.jswizzle.model.Reflection;
 import de.benshu.jswizzle.model.Type;
+import de.benshu.jswizzle.model.TypeDeclaration;
 import de.benshu.jswizzle.model.TypeParameters;
-import de.benshu.jswizzle.utils.SwizzleCollectors;
 import org.kohsuke.MetaInfServices;
 
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Processor;
 import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
-import javax.lang.model.element.Element;
+import javax.annotation.processing.SupportedSourceVersion;
+import javax.lang.model.SourceVersion;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.ErrorType;
@@ -42,14 +45,17 @@ import java.lang.annotation.Annotation;
 import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
-import static de.benshu.jswizzle.utils.SwizzleCollectors.list;
-import static de.benshu.jswizzle.utils.SwizzleCollectors.set;
+import static de.benshu.commons.core.streams.Collectors.list;
+import static de.benshu.commons.core.streams.Collectors.set;
+import static de.benshu.commons.core.streams.Collectors.setMultimap;
 
 @MetaInfServices(Processor.class)
 @SupportedAnnotationTypes("*")
+@SupportedSourceVersion(SourceVersion.RELEASE_8)
 public class SwizzleProcessor extends AbstractProcessor {
     @Override
     public final boolean process(final Set<? extends TypeElement> annotations, final RoundEnvironment roundEnvironment) {
@@ -57,22 +63,23 @@ public class SwizzleProcessor extends AbstractProcessor {
             if (roundEnvironment.processingOver() || annotations.isEmpty())
                 return false;
 
-            final ImmutableSetMultimap<TypeElement, MixinComponent> mixins = annotations.stream()
+            Function<? super MixinComponent, ? extends MixinComponent> valueFunction = c -> c;
+            final ImmutableSetMultimap<TypeDeclaration, MixinComponent> mixins = annotations.stream()
                     .filter(a -> a.getAnnotation(Swizzle.class) != null)
                     .map(this::loadAnnotation)
                     .flatMap(a -> compute(roundEnvironment, a))
-                    .collect(SwizzleCollectors.setMultimap(MixinComponent::getMix, c -> c));
+                    .collect(setMultimap(MixinComponent::getMix, valueFunction));
 
             mixins.asMap().entrySet().stream().forEach(m -> {
-                final ImmutableSet<TypeMirror> candidates = m.getKey().getInterfaces().stream()
+                final ImmutableSet<TypeDeclaration> candidates = m.getKey().interfaces()
                         .filter(this::isMixinCandidate)
-                        .collect(SwizzleCollectors.set());
+                        .collect(set());
 
                 if (candidates.size() == 1) {
-                    final DeclaredType mixin = (DeclaredType) candidates.iterator().next();
-                    final Identifier name = Identifier.from(simpleNameOf(mixin), CaseFormat.UPPER_CAMEL);
+                    final TypeDeclaration mixin = candidates.iterator().next();
+                    final Identifier name = Identifier.from(mixin.getName(), CaseFormat.UPPER_CAMEL);
 
-                    generateMixin(new Mixin(mixin, name, m.getKey(), ImmutableSet.copyOf(m.getValue())));
+                    generateMixin(new Mixin((DeclaredType) mixin.asType().getMirror(), name, m.getKey(), ImmutableSet.copyOf(m.getValue())));
                 }
             });
 
@@ -88,20 +95,21 @@ public class SwizzleProcessor extends AbstractProcessor {
         }
     }
 
-    private boolean isMixinCandidate(TypeMirror mixin) {
-        final Element ifaceElement = processingEnv.getTypeUtils().asElement(mixin);
+    private boolean isMixinCandidate(TypeDeclaration iface) {
+        final TypeMirror typeMirror = iface.asType().getMirror();
+        final TypeMirror declarationTypeMirror = typeMirror instanceof DeclaredType
+                ? ((DeclaredType) typeMirror).asElement().asType()
+                : typeMirror;
 
-        return ErrorType.class.isInstance(mixin)
-                || DeclaredType.class.isInstance(mixin) && ifaceElement.getAnnotation(SwizzleMixin.class) != null;
-
+        return ErrorType.class.isInstance(declarationTypeMirror) || iface.isAnnotatedWith(SwizzleMixin.class);
     }
 
     private void generateMixin(Mixin mixin) {
         try {
-            final String mixinFqn = processingEnv.getElementUtils().getPackageOf(mixin.getMix()).getQualifiedName().toString()
+            final String mixinFqn = mixin.getMix().getPackage().getQualifiedName().toString()
                     + "." + mixin.getName().getPascalCased();
 
-            try (Writer w = processingEnv.getFiler().createSourceFile(mixinFqn, mixin.getMix()).openWriter()) {
+            try (Writer w = processingEnv.getFiler().createSourceFile(mixinFqn, mixin.getMix().getMirror()).openWriter()) {
                 w.write(renderMixin(mixin));
             }
         } catch (IOException e) {
@@ -110,55 +118,64 @@ public class SwizzleProcessor extends AbstractProcessor {
     }
 
     private String renderMixin(Mixin mixin) {
+        final Reflection reflection = Reflection.reflectionFor(processingEnv);
+
         final ImmutableList<String> typeArguments = mixin.getReference().getTypeArguments().stream()
                 .map(TypeVariable.class::cast)
                 .map(v -> v.asElement().getSimpleName().toString())
                 .collect(list());
 
-        final String pkg = processingEnv.getElementUtils().getPackageOf(mixin.getMix()).getQualifiedName().toString();
-        final Pattern redundantImport = Pattern.compile("\\A" + Pattern.quote(pkg) + "\\.[^\\.]+\\z");
+        final TypeParameters typeParameters = mixin.getMix().getTypeParameters().select(typeArguments);
+        final Stream<Import> typeBoundImports = typeParameters.referencedTypes().map(Import::of);
+
+        final ImmutableSet<Type> supermixins = findSupermixins(mixin);
+
+        final Stream<Import> allImports = Stream.of(
+                typeBoundImports,
+                supermixins.stream()
+                        .flatMap(t -> ((DeclaredType) t.getMirror()).getTypeArguments().stream().map(reflection::of))
+                        .flatMap(Type::referencedTypes)
+                        .map(Import::of),
+                mixin.getComponents().stream()
+                        .flatMap(c -> c.getRequiredImports().stream())
+        ).flatMap(s -> s);
+
+        final String pakkage = mixin.getMix().getPackage().getQualifiedName().toString();
+        final Pattern redundantImport = Pattern.compile("\\A" + Pattern.quote(pakkage) + "\\.[^\\.]+\\z");
+
+        final ImmutableSet<String> imports = allImports
+                .map(Import::toString)
+                .filter(redundantImport.asPredicate().negate())
+                .distinct()
+                .sorted()
+                .collect(set());
 
         return Template.render("mixin.java.template", ImmutableMap.<String, Object>builder()
-                        .put("package", pkg)
-                        .put("imports", mixin.getComponents().stream()
-                                .flatMap(c -> c.getRequiredImports().stream().map(Import::toString))
-                                .filter(redundantImport.asPredicate().negate())
-                                .distinct()
-                                .sorted()
-                                .collect(set()))
+                        .put("package", pakkage)
+                        .put("imports", imports)
                         .put("name", mixin.getName())
-                        .put("typeParameters", TypeParameters.of(mixin.getMix()).select(typeArguments).asJavaSource())
+                        .put("typeParameters", typeParameters.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES))
                         .put("components", mixin.getComponents().stream().map(MixinComponent::getBody).collect(set()))
-                        .put("superMixins", findSupermixins(mixin))
+                        .put("superMixins", supermixins.stream().map(s -> s.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES)).collect(set()))
                         .build()
         );
     }
 
-    private ImmutableSet<String> findSupermixins(Mixin mixin) {
+    private ImmutableSet<Type> findSupermixins(Mixin mixin) {
         return findSupermixinsInSupertypesOf(mixin.getMix()).collect(set());
     }
 
-    private Stream<String> findSupermixinsInSupertypesOf(TypeElement typeElement) {
-        return Stream.concat(Stream.of(typeElement.getSuperclass()), typeElement.getInterfaces().stream())
-                .map(t -> (TypeElement) processingEnv.getTypeUtils().asElement(t))
-                .filter(e -> e != null)
-                .flatMap(this::findSupermixin);
+    private Stream<Type> findSupermixinsInSupertypesOf(TypeDeclaration typeElement) {
+        return typeElement.supertypes().flatMap(this::findSupermixin);
     }
 
-    private Stream<String> findSupermixin(TypeElement typeElement) {
-        final Optional<String> supermixin = typeElement.getInterfaces().stream()
+    private Stream<Type> findSupermixin(TypeDeclaration supertype) {
+        final Optional<Type> supermixin = supertype.interfaces()
                 .filter(this::isMixinCandidate)
-                .map(Type::from)
-                .map(Type::asJavaSource)
+                .map(TypeDeclaration::asType)
                 .findAny();
 
-        return supermixin.isPresent()
-                ? Stream.of(supermixin.get())
-                : findSupermixinsInSupertypesOf(typeElement);
-    }
-
-    private String simpleNameOf(TypeMirror mixin) {
-        return processingEnv.getTypeUtils().asElement(mixin).getSimpleName().toString();
+        return supermixin.map(Stream::of).orElseGet(() -> findSupermixinsInSupertypesOf(supertype));
     }
 
     private Class<? extends Annotation> loadAnnotation(TypeElement annotation) {
@@ -173,7 +190,7 @@ public class SwizzleProcessor extends AbstractProcessor {
         final Class<? extends MixinComputer> computerClass = annotation.getAnnotation(Swizzle.class).computer();
         final MixinComputer computer = Iterables.getOnlyElement(ServiceLoader.load(computerClass, computerClass.getClassLoader()));
 
-        return roundEnvironment.getElementsAnnotatedWith(annotation).stream().map(e -> computer.computeFor(processingEnv, e));
+        return roundEnvironment.getElementsAnnotatedWith(annotation).stream().map(e -> computer.computeFor(Reflection.reflectionFor(processingEnv), e));
     }
 
 }

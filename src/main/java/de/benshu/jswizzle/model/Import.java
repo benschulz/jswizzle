@@ -5,6 +5,14 @@ import com.google.common.collect.FluentIterable;
 import com.google.common.collect.ImmutableSet;
 
 public abstract class Import implements CharSequence, JavaSourceConvertible {
+    public static Import ofPackage(FullyQualifiedName fqn) {
+        return new Import(FluentIterable.from(fqn).append("*").join(Joiner.on("."))) {};
+    }
+
+    public static Import of(FullyQualifiedName fqn) {
+        return new Import(FluentIterable.from(fqn).join(Joiner.on("."))) {};
+    }
+
     private final String importString;
 
     Import(String importString) {
@@ -44,14 +52,5 @@ public abstract class Import implements CharSequence, JavaSourceConvertible {
     @Override
     public CharSequence subSequence(int start, int end) {
         return importString.subSequence(start, end);
-    }
-
-
-    public static Import ofPackage(FullyQualifiedName fqn) {
-        return new Import(FluentIterable.from(fqn).append("*").join(Joiner.on("."))) {};
-    }
-
-    public static Import of(FullyQualifiedName fqn) {
-        return new Import(FluentIterable.from(fqn).join(Joiner.on("."))) {};
     }
 }

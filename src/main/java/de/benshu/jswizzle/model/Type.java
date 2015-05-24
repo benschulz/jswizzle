@@ -11,26 +11,48 @@ import javax.lang.model.type.TypeMirror;
 import javax.lang.model.type.TypeVariable;
 import javax.lang.model.type.WildcardType;
 import javax.lang.model.util.SimpleTypeVisitor8;
+import java.util.stream.Stream;
 
 import static java.util.stream.Collectors.joining;
 
 public class Type implements JavaSourceConvertible {
-    public static Type from(TypeMirror typeMirror) {
-        return new Type(typeMirror);
+    private final Reflection reflection;
+    private final TypeMirror mirror;
+
+    Type(Reflection reflection, TypeMirror mirror) {
+        this.reflection = reflection;
+        this.mirror = mirror;
     }
 
-    private final TypeMirror type;
+    public TypeMirror getMirror() {
+        return mirror;
+    }
 
-    private Type(TypeMirror type) {
-        this.type = type;
+    @Override
+    public boolean equals(Object obj) {
+        return obj instanceof Type && isEqualTo((Type) obj);
+    }
+
+    private boolean isEqualTo(Type other) {
+        return other == this || other.mirror.equals(mirror);
+    }
+
+    @Override
+    public int hashCode() {
+        return mirror.hashCode();
     }
 
     public String asJavaSource(ImmutableSet<AsJavaSourceOptions> options) {
-        return new AsJavaSourceVisitor(options).visit(type);
+        return new AsJavaSourceVisitor(options).visit(mirror);
     }
 
-    public ImmutableSet<FullyQualifiedName> extractReferencedTypes() {
-        return TypeReferenceCollectingVisitor.INSTANCE.visit(type, ImmutableSet.builder()).build();
+    @Override
+    public String toString() {
+        return asJavaSource();
+    }
+
+    public Stream<FullyQualifiedName> referencedTypes() {
+        return TypeReferenceCollectingVisitor.INSTANCE.visit(mirror, ImmutableSet.builder()).build().stream();
     }
 
     private static class TypeReferenceCollectingVisitor extends SimpleTypeVisitor8<ImmutableSet.Builder<FullyQualifiedName>, ImmutableSet.Builder<FullyQualifiedName>> {

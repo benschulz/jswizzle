@@ -16,7 +16,7 @@ public class FullyQualifiedName implements Iterable<String>, JavaSourceConvertib
         return create(element.getQualifiedName().toString().split("\\."));
     }
 
-    private static FullyQualifiedName create(String... names) {
+    public static FullyQualifiedName create(String... names) {
         return create(ImmutableList.copyOf(names));
     }
 
@@ -52,5 +52,10 @@ public class FullyQualifiedName implements Iterable<String>, JavaSourceConvertib
 
     public Stream<String> parallelStream() {
         return StreamSupport.stream(spliterator(), true);
+    }
+
+    @Override
+    public String toString() {
+        return asJavaSource();
     }
 }
