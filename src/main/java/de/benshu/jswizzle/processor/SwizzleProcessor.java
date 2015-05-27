@@ -131,6 +131,7 @@ public class SwizzleProcessor extends AbstractProcessor {
         final ImmutableSet<Type> supermixins = findSupermixins(mixin);
 
         final Stream<Import> allImports = Stream.of(
+                mixin.getMix().asType().referencedTypes().map(Import::of),
                 typeBoundImports,
                 supermixins.stream()
                         .flatMap(t -> ((DeclaredType) t.getMirror()).getTypeArguments().stream().map(reflection::of))

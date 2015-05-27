@@ -1,2 +1,2 @@
 
-    ${qualifiedMixType} with${property.name.pascalCased}(${property.simpleTypeName} ${"new" + property.name.pascalCased});
+    ${simpleMixType} with${property.name.pascalCased}(${property.simpleTypeName} ${"new" + property.name.pascalCased});

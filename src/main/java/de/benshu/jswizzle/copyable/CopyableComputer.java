@@ -46,6 +46,8 @@ public class CopyableComputer extends MixinComputer {
         final Optional<ParameterizedExecutableElementReflection> constructorOrFactory = findConstructorOrFactory(mix);
         final ImmutableList<Property> properties = determineProperties(mix, constructorOrFactory);
 
+        final String simpleMixType = mixType.asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES);
+
         return new MixinComponent() {
             @Override
             public TypeDeclaration getMix() {
@@ -73,14 +75,14 @@ public class CopyableComputer extends MixinComputer {
             private String toCopyMethod(Property property) {
                 if (constructorOrFactory.isPresent())
                     return Template.render("copy-method.java.template", ImmutableMap.of(
-                            "qualifiedMixType", mixType.asJavaSource(),
+                            "simpleMixType", simpleMixType,
                             "property", property,
                             // TODO Figure out how to move this to the template.
                             "copyInvocation", copyInvocationFor(constructorOrFactory.get(), property)
                     ));
                 else
                     return Template.render("abstract-copy-method.java.template", ImmutableMap.of(
-                            "qualifiedMixType", mixType.asJavaSource(),
+                            "simpleMixType", simpleMixType,
                             "property", property
                     ));
             }
@@ -93,9 +95,9 @@ public class CopyableComputer extends MixinComputer {
                 switch (constructorOrFactory.getKind()) {
                     case METHOD:
                         MethodDeclaration methodDeclaration = (MethodDeclaration) constructorOrFactory;
-                        return mixType.asJavaSource().split("<")[0] + "." + methodDeclaration.getName();
+                        return simpleMixType.split("<")[0] + "." + methodDeclaration.getName();
                     case CONSTRUCTOR:
-                        return "new " + mixType.asJavaSource();
+                        return "new " + simpleMixType;
                     default:
                         throw new AssertionError();
                 }
@@ -106,7 +108,7 @@ public class CopyableComputer extends MixinComputer {
             }
 
             private String determineGetOf(Property property) {
-                return "                ((" + mixType.asJavaSource() + ") this)." + property.getAccessor();
+                return "                ((" + simpleMixType + ") this)." + property.getAccessor();
             }
         };
     }

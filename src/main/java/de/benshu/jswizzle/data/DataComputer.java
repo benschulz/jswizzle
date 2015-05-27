@@ -67,7 +67,7 @@ public class DataComputer extends MixinComputer {
             @Override
             public String getBody() {
                 return Template.render("accessors.java.template", ImmutableMap.of(
-                        "qualifiedMixType", mix.asType().asJavaSource(),
+                        "simpleMixType", mix.asType().asJavaSource(AsJavaSourceOptions.SIMPLE_NAMES),
                         "properties", properties
                 ));
             }
